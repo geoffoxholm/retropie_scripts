@@ -146,7 +146,7 @@ class GamelistGame(Game):
                 return str(ET.tostring(element)).replace(
                     f"<{token}>", "").replace(f"</{token}>",
                                               "").replace(f"<{token} />", "")
-            return element.text
+            return default if element.text is None else element.text
         return default
 
     def set_text_property(self, token, value):
@@ -173,9 +173,12 @@ class GamelistGame(Game):
         return self.get_property("desc")
 
     @property
-    def genre(self):
+    def genres(self):
         """The genere of the game"""
-        return self.get_property("genre")
+        genres = self.get_property("genre")
+        if genres is None:
+            return ["N/A"]
+        return map(lambda x: x.strip(), genres.split(" / "))
 
     @property
     def image(self):
@@ -279,6 +282,34 @@ class SystemKidlist(System):
         """Returns whether the full system is hidden"""
         return "hide_all" in self._dict and self._dict["hide_all"]
 
+    @property
+    def games(self):
+        """Returns an iterator of games represented by this system"""
+        game_names = set()
+        for games in self._dict.values():
+            if isinstance(games, list):
+                for game in games:
+                    game_names.add(game)
+        for name in game_names:
+            yield (self.game(name))
+
+    def clean(self, gamelist):
+        """Removes games not found in gamelist"""
+        for game in self.games:
+            if gamelist.game(game.name) is None:
+                changed = False
+                for game_names in self._dict.values():
+                    if isinstance(game_names, list):
+                        before = len(game_names)
+                        game_names[:] = [
+                            name for name in game_names if name != game.name
+                        ]
+                        if len(game_names) != before:
+                            changed = True
+                if changed:
+                    self.add_change(
+                        f"Removed {game.name}, not found in gamelist")
+
 
 class Kidlist:
     """Class that keeps track of my own list of properties"""
@@ -319,6 +350,22 @@ class Kidlist:
         if system not in self.changes:
             self.changes[system] = []
         self.changes[system].append(change)
+
+    @property
+    def systems(self):
+        """Returns an iterator of systems"""
+        for system_name in self._dict:
+            yield self.get_system(system_name)
+
+    def clean(self, gamelists):
+        """Removes missing games or systems"""
+        for system_kidlist in self.systems:
+            system_gamelist = gamelists.get_system(system_kidlist.name)
+            if system_gamelist is not None:
+                system_kidlist.clean(system_gamelist)
+            else:
+                self.add_change(system_kidlist.name,
+                                "WARNING! No gamelist found!")
 
 
 class SystemGamelist(System):
@@ -436,6 +483,13 @@ class SystemGamelist(System):
                 game.set_text_property(field, description)
                 self.add_change(f"Cleaned text of {game.name}")
 
+            if "Plateform" in game.genres:
+                game.set_text_property(
+                    "genre",
+                    game.get_property("genre").replace("Plateform",
+                                                       "Platform"))
+                self.add_change(f"Cleaned genre of {game.name}")
+
     def format_videos(self, dry_run, cache=None):
         """Ensures all the videos for the roms are in a good format"""
         if cache is None:
@@ -524,6 +578,7 @@ class Gamelists:
             with open(self._format_cache_path, "w") as handle:
                 json.dump(self._format_cache, handle, indent=2, sort_keys=True)
         except:
+            print("Error saving cache!")
             print(self._format_cache)
 
     @property
@@ -626,11 +681,33 @@ def sync(kidlist, gamelists, union=True, tokens=DEFAULT_TOKENS):
                 gamelist_game.set_type(token, new_status)
 
 
+def print_genres(gamelists):
+    """Prints some information about the sate of affairs"""
+
+    genres = {}
+    for system in gamelists.systems:
+        for gamelist_game in system.games:
+            for genre in gamelist_game.genres:
+                if genre not in genres:
+                    genres[genre] = 0
+                genres[genre] += 1
+
+    underline("Genres")
+    for genre, count in sorted(genres.items(),
+                               reverse=True,
+                               key=lambda item: item[1]):
+        print(f"{genre}: {count}")
+    print()
+
+
 def print_info(kidlist, gamelists, tokens=DEFAULT_TOKENS):
     """Prints some information about the sate of affairs"""
+
+    genres = {}
     for system in gamelists.systems:
         underline(system.name)
         system_kidlist = kidlist.get_system(system.name)
+        print(f"Total: {len(list(system.games))}")
         for token in tokens:
             both_count = 0
             only_one_count = 0
@@ -642,6 +719,10 @@ def print_info(kidlist, gamelists, tokens=DEFAULT_TOKENS):
                 either = flagged_kidlist or flagged_gamelist
                 both_count += both
                 only_one_count += either and not both
+                for genre in gamelist_game.genres:
+                    if genre not in genres:
+                        genres[genre] = 0
+                    genres[genre] += 1
             print(f"{token} - both: {both_count} one: {only_one_count}")
         print()
 
@@ -661,8 +742,12 @@ def main():
         sync(kidlist, gamelists, not args.require_both)
     elif args.action == "info":
         print_info(kidlist, gamelists)
-    elif args.action == "clean":
+    elif args.action == "genres":
+        print_genres(gamelists)
+    elif args.action in ["clean", "clean-gamelists"]:
         gamelists.clean()
+    elif args.action == "clean-kidlist":
+        kidlist.clean(gamelists)
     elif args.action == "format-videos":
         gamelists.format_videos(args.dry_run)
     elif args.action == "remove-incomplete":
@@ -670,6 +755,7 @@ def main():
     elif args.action == "revert":
         gamelists.restore_backup()
         kidlist.restore_backup()
+        print("Restored backups")
         return
     elif args.action == "backup":
         gamelists.backup()
