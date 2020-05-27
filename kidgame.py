@@ -5,8 +5,10 @@ import xml.etree.ElementTree as ET
 import json
 import os
 import glob
-import collections
 import ffmpeg
+import signal
+import sys
+from shutil import copyfile
 
 DEFAULT_GAMELIST_DIRS = (os.path.expanduser("~/RetroPie/roms"),
                          os.path.expanduser("~/.emulationstation/gamelists"))
@@ -16,9 +18,13 @@ DEFAULT_TOKENS = ("kidgame", "favorite", "hidden")
 DEFAULT_KIDLIST_PATH = os.path.expanduser(
     "/opt/retropie/configs/all/emulationstation/kidlist.json")
 
+DEFAULT_FORMAT_CACHE = os.path.expanduser(
+    os.path.expanduser("~/.emulationstation/format_cache.json"))
+
 
 class Game:
     """Represents a single game of a system"""
+
     def __init__(self, name):
         """Constructor"""
         self.name = name
@@ -64,6 +70,7 @@ class Game:
 
 class KidlistGame(Game):
     """Game as represented by a kidlist"""
+
     def __init__(self, system_kidlist, name):
         """Constructor"""
         Game.__init__(self, name)
@@ -93,6 +100,7 @@ class KidlistGame(Game):
 
 class GamelistGame(Game):
     """Game as represented by a gamelist.xml"""
+
     def __init__(self, element, root, gamelist):
         """Constructor"""
         Game.__init__(
@@ -120,11 +128,15 @@ class GamelistGame(Game):
         if value:
             kidgame = ET.SubElement(self._element, token)
             kidgame.text = "true"
-            self._gamelist.add_change(f"Marked {self.name} as {token}")
+            self.add_change(f"Marked {self.name} as {token}")
         else:
             sub_element = self._element.find(token)
             self._element.remove(sub_element)
-            self._gamelist.add_change(f"Marked {self.name} as not {token}")
+            self.add_change(f"Marked {self.name} as not {token}")
+
+    def add_change(self, change):
+        """Adds a change to the list"""
+        self._gamelist.add_change(change)
 
     def get_property(self, token, default=None):
         """Returns the value of a token, or the default if it's not found"""
@@ -156,21 +168,67 @@ class GamelistGame(Game):
     @property
     def image(self):
         """Image of game"""
-        return self.get_property("image")
+        return self.get_path("image")
 
     @property
     def video(self):
         """Video of game"""
-        return self.get_property("video")
+        return self.get_path("video")
 
     @property
     def path(self):
         """Path of game rom"""
-        return self.get_property("path")
+        return self.get_path("path")
+
+    @property
+    def exists(self):
+        """Whether or not the rom is on disk"""
+        return os.path.exists(self.path)
+
+    @property
+    def element(self):
+        """Read only access to the element"""
+        return self._element
+
+    @property
+    def video_well_formatted(self):
+        """Whether the video is properly formatted"""
+        video_path = self.video
+        if video_path and os.path.exists(video_path):
+            try:
+                probe = ffmpeg.probe(video_path)
+                video_stream = next((stream for stream in probe['streams']
+                                     if stream['codec_type'] == 'video'), None)
+                return video_stream['pix_fmt'] in ['yuv420p']
+            except ffmpeg._run.Error as error:
+                print(
+                    f"Error probing {video_path} (video for {self.display_name})"
+                )
+                return False
+        return False
+
+    def format_video(self):
+        """Ensures the video is in a good format"""
+        video_path = self.video
+        if video_path and os.path.exists(video_path):
+            temp_path = "%s-new%s" % os.path.splitext(video_path)
+            print(f"Converting {video_path}")
+            try:
+                ffmpeg.input(video_path).output(
+                    temp_path, pix_fmt="yuv420p").overwrite_output().run(
+                        capture_stdout=True, capture_stderr=True)
+                os.rename(temp_path, video_path)
+                return True
+            except ffmpeg._run.Error as error:
+                print(f"ERROR: Failed processing {video_path}")
+                print(error)
+                return False
+        return False
 
 
 class System:
     """Represents a system"""
+
     def __init__(self, name):
         """Constructor for a system"""
         self.name = name
@@ -183,6 +241,7 @@ class System:
 
 class SystemKidlist(System):
     """System kidlist"""
+
     def __init__(self, kidlist, system):
         """Constructor"""
         System.__init__(self, system)
@@ -213,6 +272,7 @@ class SystemKidlist(System):
 
 class Kidlist:
     """Class that keeps track of my own list of properties"""
+
     def __init__(self, path=DEFAULT_KIDLIST_PATH):
         """Constructor"""
         self.changes = {}
@@ -226,10 +286,24 @@ class Kidlist:
         """Returns a KidlistSystem"""
         return SystemKidlist(self, system_name)
 
+    @property
+    def backup_path(self):
+        """Returns the path this file backs up to when saving a new one"""
+        return "%s-bak%s" % os.path.splitext(self._path)
+
+    def backup(self):
+        """Backup"""
+        copyfile(self._path, self.backup_path)
+
     def save(self):
         """Saves all changes"""
+        # Save
         with open(self._path, "w") as handle:
             json.dump(self._dict, handle, indent=2, sort_keys=True)
+
+    def restore_backup(self):
+        """Restores from backup"""
+        copyfile(self.backup_path, self._path)
 
     def add_change(self, system, change):
         """Add a change to the list"""
@@ -240,12 +314,27 @@ class Kidlist:
 
 class SystemGamelist(System):
     """Class that wraps a specific gamelist.xml"""
-    def __init__(self, path, name):
+
+    def __init__(self, path, name, gamelists):
         """Constructor"""
         System.__init__(self, name)
         self._path = path
         self._tree = ET.parse(self._path)
         self.changes = []
+        self._gamelists = gamelists
+
+    @property
+    def backup_path(self):
+        """Returns the path this file backs up to when saving a new one"""
+        return "%s-bak%s" % os.path.splitext(self._path)
+
+    def restore_backup(self):
+        """Restores from backup"""
+        copyfile(self.backup_path, self._path)
+
+    def backup(self):
+        """Backup"""
+        copyfile(self._path, self.backup_path)
 
     def save(self):
         """Saves any changes"""
@@ -273,13 +362,114 @@ class SystemGamelist(System):
         """Adds a change to list of changes"""
         self.changes.append(change)
 
+    def remove_incomplete(self, remove_empty=False):
+        """Checks the files"""
+        to_remove = set()
+        for game in self.games:
+            for field in ["video", "image"]:
+                path = game.get_path(field)
+                if not path:
+                    if remove_empty:
+                        self.add_change(
+                            f"Removed {game.display_name} ({game.name}). Empty {field}."
+                        )
+                        to_remove.add(game)
+                elif not os.path.exists(path):
+                    self.add_change(
+                        f"Removed {game.display_name} ({game.name}). Missing {field}."
+                    )
+                    to_remove.add(game)
+
+        root = self._tree.getroot()
+        for game in to_remove:
+            root.remove(game.element)
+
+    def clean(self):
+        """Clean the xml"""
+        to_remove = set()
+        paths = {}
+        for game in self.games:
+            if not game.exists:
+                to_remove.add(game)
+                self.add_change(f"Removed {game.name} from xml (missing rom)")
+                continue
+            path = game.path
+            if path in paths:
+                to_remove.add(game)
+                master = paths[path]._element
+                rom = game._element
+                # Merge attributes
+                master.attrib.update(rom.attrib)
+                for child in rom:
+                    if master.find(rom.tag) is None:
+                        master.append(child)
+                self.add_change(f"Removed {game.name} from xml (duplicate)")
+                continue
+            # Save the unique entry for this path
+            paths[path] = game
+
+        # Now remove the ones marked for removal
+        root = self._tree.getroot()
+        for game in to_remove:
+            root.remove(game.element)
+
+        # Remove special characters
+        for rom in self._tree.getroot():
+            modified = False
+            for element_type in ["desc", "developer"]:
+                description = rom.find(element_type)
+                if description is not None:
+                    if description.text is not None:
+                        before = description.text[:]
+                        description.text = description.text.replace(
+                            "&amp;", "&")
+                        description.text = description.text.replace(
+                            "&quot;", "\"")
+                        if description.text != before:
+                            modified = True
+            if modified:
+                self.add_change(f"Cleaned text of {game.name}")
+
+    def format_videos(self, dry_run, cache=None):
+        """Ensures all the videos for the roms are in a good format"""
+        if cache is None:
+            cache = {}
+        for game in self.games:
+            path = game.video
+            if path is None:
+                # No video for this one
+                continue
+
+            if cache is not None and path in cache:
+                if cache[path]:
+                    continue
+            else:
+                cache[path] = game.video_well_formatted
+            if not cache[path]:
+                self.add_change(f"Converted video for {game.display_name}")
+                if not dry_run:
+                    if game.format_video() and cache is not None:
+                        cache[path] = True
+
+            self._gamelists.save_cache()
+
 
 class Gamelists:
     """Class that represents the gamelists on the machine"""
-    def __init__(self, dirs=DEFAULT_GAMELIST_DIRS):
+
+    def __init__(self,
+                 systems=None,
+                 dirs=DEFAULT_GAMELIST_DIRS,
+                 format_cache=DEFAULT_FORMAT_CACHE):
         """Constructor"""
         self._dirs = dirs
         self._open_systems = {}
+        self._systems_whitelist = systems
+        self._format_cache_path = format_cache
+        self._format_cache = {}
+        if os.path.exists(format_cache):
+            with open(format_cache, "r") as handle:
+                self._format_cache = json.load(handle)
 
     def get_gamelist_path(self, system_name):
         """Finds a gamelist.xml if possible"""
@@ -300,19 +490,36 @@ class Gamelists:
 
     def get_system(self, system_name):
         """Returns a SystemGamelist"""
+        if self._systems_whitelist and system_name not in self._systems_whitelist:
+            return None
+
         if system_name not in self._open_systems:
             path = self.get_gamelist_path(system_name)
             if path is None:
-                raise RuntimeError(
-                    f"Could not find gamelist.xml for {system_name}")
-            self._open_systems[system_name] = SystemGamelist(path, system_name)
+                return None
+            self._open_systems[system_name] = SystemGamelist(
+                path, system_name, self)
         return self._open_systems[system_name]
+
+    def backup(self):
+        """Backs-up all open systems"""
+        for system in self._open_systems.values():
+            if system.changes:
+                system.backup()
 
     def save(self):
         """Saves all open systems"""
         for system in self._open_systems.values():
             if system.changes:
                 system.save()
+
+    def save_cache(self):
+        """Writes the cache to disk"""
+        try:
+            with open(self._format_cache_path, "w") as handle:
+                json.dump(self._format_cache, handle, indent=2, sort_keys=True)
+        except:
+            print(self._format_cache)
 
     @property
     def systems(self):
@@ -325,15 +532,40 @@ class Gamelists:
                     # Ignore symlinks
                     continue
                 name = Gamelists.get_system_name_from_path(gamelist)
-                yield SystemGamelist(gamelist, name)
+                if self._systems_whitelist and name not in self._systems_whitelist:
+                    continue
+                yield self.get_system(name)
 
     @property
     def changes(self):
         """Returns a list of changes that were made"""
         changes = {}
-        for system in self._open_systems:
-            changes[system] = system.changes
+        for system_name, system in self._open_systems.items():
+            changes[system_name] = system.changes
         return changes
+
+    def clean(self, ignore=("retropie")):
+        """Does cleaning of the systems"""
+        for system in self.systems:
+            if system.name not in ignore:
+                system.clean()
+
+    def format_videos(self, dry_run):
+        """Ensures the videos are formatted correctly"""
+        for system in self.systems:
+            system.format_videos(dry_run, self._format_cache)
+
+    def remove_incomplete(self, ignore=("retropie")):
+        """Checks for missing images or videos"""
+        for system in self.systems:
+            if system.name not in ignore:
+                system.remove_incomplete()
+
+    def restore_backup(self, ignore=("retropie")):
+        """Restores backups"""
+        for system in self.systems:
+            if system.name not in ignore:
+                system.restore_backup()
 
 
 def underline(message):
@@ -346,10 +578,11 @@ def parse_args():
     """Parse arguments"""
     parser = argparse.ArgumentParser(
         description="Exports or applies kidgame tag to gameslist.xml file")
-    parser.add_argument("action",
-                        help="Action {sync,clean,info}",
-                        default=None,
-                        nargs="?")
+    parser.add_argument(
+        "action",
+        help="Action {sync,clean,info,format-videos,remove-incomplete}",
+        default="info",
+        nargs="?")
     parser.add_argument("--format-videos",
                         help="Format the videos for OMX player",
                         dest="actions",
@@ -365,8 +598,7 @@ def parse_args():
                         help="Which system(s) to run on")
     parser.add_argument(
         "--require-both",
-        help=
-        "When syncing, set status only if both lists agree, otherwise unset",
+        help="When syncing, set status only if both lists agree, otherwise unset",
         action="store_true",
         default=False)
     args = parser.parse_args()
@@ -374,13 +606,9 @@ def parse_args():
     return args
 
 
-def sync(kidlist, gamelists, systems, union=True, tokens=DEFAULT_TOKENS):
+def sync(kidlist, gamelists, union=True, tokens=DEFAULT_TOKENS):
     """Syncs the two sources of truth"""
-
     for system in gamelists.systems:
-        if systems:
-            if system.name not in systems:
-                continue
         system_kidlist = kidlist.get_system(system.name)
         for gamelist_game in system.games:
             kidlist_game = system_kidlist.game(gamelist_game.name)
@@ -392,12 +620,9 @@ def sync(kidlist, gamelists, systems, union=True, tokens=DEFAULT_TOKENS):
                 gamelist_game.set_type(token, new_status)
 
 
-def print_info(kidlist, gamelists, systems, tokens=DEFAULT_TOKENS):
+def print_info(kidlist, gamelists, tokens=DEFAULT_TOKENS):
     """Prints some information about the sate of affairs"""
     for system in gamelists.systems:
-        if systems:
-            if system.name not in systems:
-                continue
         underline(system.name)
         system_kidlist = kidlist.get_system(system.name)
         for token in tokens:
@@ -418,19 +643,34 @@ def print_info(kidlist, gamelists, systems, tokens=DEFAULT_TOKENS):
 def main():
     """Main Method"""
     args = parse_args()
-    if args == None:
+    if args is None:
         print("use --help for usage")
         return
 
     # Load the two sources of truth
-    gamelists = Gamelists()
+    gamelists = Gamelists(args.systems)
     kidlist = Kidlist()
 
     if args.action == "sync":
-        sync(kidlist, gamelists, args.systems, not args.require_both)
-
-    if args.action == "info":
-        print_info(kidlist, gamelists, args.systems)
+        sync(kidlist, gamelists, not args.require_both)
+    elif args.action == "info":
+        print_info(kidlist, gamelists)
+    elif args.action == "clean":
+        gamelists.clean()
+    elif args.action == "format-videos":
+        gamelists.format_videos(args.dry_run)
+    elif args.action == "remove-incomplete":
+        gamelists.remove_incomplete()
+    elif args.action == "revert":
+        gamelists.restore_backup()
+        kidlist.restore_backup()
+        return
+    elif args.action == "backup":
+        gamelists.backup()
+        kidlist.backup()
+    else:
+        print(f"Unknown action {args.action}")
+        return
 
     # Print any changes
     for source_type, source in {
@@ -439,16 +679,20 @@ def main():
     }.items():
         some_changes = False
         for system, changes in source.changes.items():
-            underline(f"Changes to {system}'s {source_type}")
-            for change in changes:
-                print(change)
-                some_changes = True
+            if len(changes):
+                underline(f"Changes to {system}'s {source_type}")
+                for change in changes:
+                    print(change)
+                    some_changes = True
+                print()
         if some_changes:
             if not args.dry_run:
+                source.backup()
                 source.save()
-                print(f"Saved {source_type}")
+                print(f"Saved {source_type} (backups made)")
             else:
                 print(f"Would have saved {source_type}")
+    print("Done")
 
 
 if __name__ == "__main__":
