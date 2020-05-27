@@ -21,10 +21,12 @@ DEFAULT_KIDLIST_PATH = os.path.expanduser(
 DEFAULT_FORMAT_CACHE = os.path.expanduser(
     os.path.expanduser("~/.emulationstation/format_cache.json"))
 
+TEXT_REPLACEMENTS = (("&amp;", "&"), ("&quot;", "\""), ("&copy;", "©"),
+                     ("&nbsp;", " "), ("&#039;", "&apos;"))
+
 
 class Game:
     """Represents a single game of a system"""
-
     def __init__(self, name):
         """Constructor"""
         self.name = name
@@ -70,7 +72,6 @@ class Game:
 
 class KidlistGame(Game):
     """Game as represented by a kidlist"""
-
     def __init__(self, system_kidlist, name):
         """Constructor"""
         Game.__init__(self, name)
@@ -100,7 +101,6 @@ class KidlistGame(Game):
 
 class GamelistGame(Game):
     """Game as represented by a gamelist.xml"""
-
     def __init__(self, element, root, gamelist):
         """Constructor"""
         Game.__init__(
@@ -138,10 +138,22 @@ class GamelistGame(Game):
         """Adds a change to the list"""
         self._gamelist.add_change(change)
 
-    def get_property(self, token, default=None):
+    def get_property(self, token, default=None, escaped=False):
         """Returns the value of a token, or the default if it's not found"""
         element = self._element.find(token)
-        return element.text if element is not None else default
+        if element is not None:
+            if escaped:
+                return str(ET.tostring(element)).replace(
+                    f"<{token}>", "").replace(f"</{token}>",
+                                              "").replace(f"<{token} />", "")
+            return element.text
+        return default
+
+    def set_text_property(self, token, value):
+        """Sets the value of a token to the given text value"""
+        element = self._element.find(token)
+        if element is not None:
+            element.text = value
 
     def get_path(self, token):
         """Returns the value of a token as a resolved path"""
@@ -228,7 +240,6 @@ class GamelistGame(Game):
 
 class System:
     """Represents a system"""
-
     def __init__(self, name):
         """Constructor for a system"""
         self.name = name
@@ -241,7 +252,6 @@ class System:
 
 class SystemKidlist(System):
     """System kidlist"""
-
     def __init__(self, kidlist, system):
         """Constructor"""
         System.__init__(self, system)
@@ -272,7 +282,6 @@ class SystemKidlist(System):
 
 class Kidlist:
     """Class that keeps track of my own list of properties"""
-
     def __init__(self, path=DEFAULT_KIDLIST_PATH):
         """Constructor"""
         self.changes = {}
@@ -314,7 +323,6 @@ class Kidlist:
 
 class SystemGamelist(System):
     """Class that wraps a specific gamelist.xml"""
-
     def __init__(self, path, name, gamelists):
         """Constructor"""
         System.__init__(self, name)
@@ -414,20 +422,18 @@ class SystemGamelist(System):
             root.remove(game.element)
 
         # Remove special characters
-        for rom in self._tree.getroot():
+        for game in self.games:
             modified = False
-            for element_type in ["desc", "developer"]:
-                description = rom.find(element_type)
+            for field in "desc", "developer", "developer":
+                description = game.get_property(field)
                 if description is not None:
-                    if description.text is not None:
-                        before = description.text[:]
-                        description.text = description.text.replace(
-                            "&amp;", "&")
-                        description.text = description.text.replace(
-                            "&quot;", "\"")
-                        if description.text != before:
-                            modified = True
+                    before = game.get_property(field, None, True)
+                    for replacement in TEXT_REPLACEMENTS:
+                        description = description.replace(*replacement)
+                    modified = modified or game.get_property(
+                        field, None, True) != before
             if modified:
+                game.set_text_property(field, description)
                 self.add_change(f"Cleaned text of {game.name}")
 
     def format_videos(self, dry_run, cache=None):
@@ -456,7 +462,6 @@ class SystemGamelist(System):
 
 class Gamelists:
     """Class that represents the gamelists on the machine"""
-
     def __init__(self,
                  systems=None,
                  dirs=DEFAULT_GAMELIST_DIRS,
@@ -598,7 +603,8 @@ def parse_args():
                         help="Which system(s) to run on")
     parser.add_argument(
         "--require-both",
-        help="When syncing, set status only if both lists agree, otherwise unset",
+        help=
+        "When syncing, set status only if both lists agree, otherwise unset",
         action="store_true",
         default=False)
     args = parser.parse_args()
