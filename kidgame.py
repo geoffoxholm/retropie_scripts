@@ -659,11 +659,6 @@ def parse_args():
         help="Action {sync,clean,info,format-videos,remove-incomplete}",
         default=["info"],
         nargs="*")
-    parser.add_argument("--format-videos",
-                        help="Format the videos for OMX player",
-                        dest="actions",
-                        action="append_const",
-                        const="format-videos")
     parser.add_argument("--dry-run",
                         help="Don't actually modify anything",
                         action="store_true",
@@ -675,7 +670,7 @@ def parse_args():
     parser.add_argument(
         "--require-both",
         help=
-        "When syncing, set status only if both lists agree, otherwise unset",
+        "For `sync` action, set status only if both lists agree, otherwise unset (remove)",
         action="store_true",
         default=False)
     args = parser.parse_args()
@@ -697,7 +692,7 @@ def sync(kidlist, gamelists, union=True, tokens=DEFAULT_TOKENS):
                 gamelist_game.set_type(token, new_status)
 
 
-def print_genres(gamelists):
+def print_genres(gamelists, sort_by_count=True):
     """Prints some information about the sate of affairs"""
 
     genres = {}
@@ -711,24 +706,33 @@ def print_genres(gamelists):
     underline("Genres")
     for genre, count in sorted(genres.items(),
                                reverse=True,
-                               key=lambda item: item[1]):
+                               key=lambda item: item[sort_by_count]):
         print(f"{genre}: {count}")
     print()
 
 
-def print_games_with_genre(gamelists, genre, action=None, kidlist=None):
+def print_games_with_genre(gamelists,
+                           genre,
+                           action=None,
+                           kidlist=None,
+                           tokens=DEFAULT_TOKENS):
     """Prints all games with the given genre"""
+    just_list = action is None or action == "list"
     for system, games in gamelists.get_games_by_genre(genre).items():
-        underline(system.name)
+        if just_list:
+            underline(system.name)
         for game in games:
-            print(game.display_name)
-            if action == "hide":
+            if just_list:
+                print(game.display_name)
+            if action in tokens:
                 if kidlist is not None:
-                    kidlist.get_system(system.name).game(
-                        game.name).set_hidden(True)
-                game.set_hidden(True)
+                    kidlist.get_system(system.name).game(game.name).set_token(
+                        action, True)
+                game.set_token(action, True)
         if action == "remove":
             system.remove_games(games)
+        if just_list:
+            print()
 
 
 def print_info(kidlist, gamelists, tokens=DEFAULT_TOKENS):
@@ -766,7 +770,7 @@ def main():
 
     # Load the two sources of truth
     gamelists = Gamelists(args.systems)
-    kidlist = Kidlist()
+    kidlist = Kidlist()  # TODO - send systems in here, too
 
     action, action_arguments = args.action[0], args.action[1:]
 
@@ -783,7 +787,10 @@ def main():
             print("ERROR: You must specify a genre")
             return
     elif action == "genres":
-        print_genres(gamelists)
+        sort_by_count = False
+        if len(action_arguments):
+            sort_by_count = action_arguments[0] == "count"
+        print_genres(gamelists, sort_by_count)
     elif action in ["clean", "clean-gamelists"]:
         gamelists.clean()
     elif action == "clean-kidlist":
