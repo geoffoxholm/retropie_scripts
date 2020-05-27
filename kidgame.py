@@ -417,6 +417,19 @@ class SystemGamelist(System):
         """Adds a change to list of changes"""
         self.changes.append(change)
 
+    def remove_games(self, to_remove):
+        """Removes games from this system"""
+        root = self._tree.getroot()
+        for game in to_remove:
+            comment = None
+            if isinstance(game, tuple):
+                game, comment = game
+            root.remove(game.element)
+            change = f"Removed {game.display_name} ({game.name})"
+            if comment is not None:
+                change = f"{change} - {comment}"
+            self.add_change(change)
+
     def remove_incomplete(self, remove_empty=False):
         """Checks the files"""
         to_remove = set()
@@ -425,19 +438,11 @@ class SystemGamelist(System):
                 path = game.get_path(field)
                 if not path:
                     if remove_empty:
-                        self.add_change(
-                            f"Removed {game.display_name} ({game.name}). Empty {field}."
-                        )
-                        to_remove.add(game)
+                        to_remove.add((game, f"Empty {field}"))
                 elif not os.path.exists(path):
-                    self.add_change(
-                        f"Removed {game.display_name} ({game.name}). Missing {field}."
-                    )
-                    to_remove.add(game)
+                    to_remove.add((game, f"Missing {field}"))
 
-        root = self._tree.getroot()
-        for game in to_remove:
-            root.remove(game.element)
+        self.remove_games(to_remove)
 
     def clean(self):
         """Clean the xml"""
@@ -464,9 +469,7 @@ class SystemGamelist(System):
             paths[path] = game
 
         # Now remove the ones marked for removal
-        root = self._tree.getroot()
-        for game in to_remove:
-            root.remove(game.element)
+        self.remove_games(to_remove)
 
         # Remove special characters
         for game in self.games:
@@ -512,6 +515,10 @@ class SystemGamelist(System):
                         cache[path] = True
 
             self._gamelists.save_cache()
+
+    def get_games_by_genre(self, genre):
+        """Returns all the games in this system that have the given genre"""
+        return [game for game in self.games if genre in game.genres]
 
 
 class Gamelists:
@@ -627,6 +634,15 @@ class Gamelists:
             if system.name not in ignore:
                 system.restore_backup()
 
+    def get_games_by_genre(self, genre):
+        """Returns a dictionary of systems to game lists"""
+        result = {}
+        for system in self.systems:
+            games = system.get_games_by_genre(genre)
+            if games:
+                result[system] = games
+        return result
+
 
 def underline(message):
     """Prints an underlined message"""
@@ -641,8 +657,8 @@ def parse_args():
     parser.add_argument(
         "action",
         help="Action {sync,clean,info,format-videos,remove-incomplete}",
-        default="info",
-        nargs="?")
+        default=["info"],
+        nargs="*")
     parser.add_argument("--format-videos",
                         help="Format the videos for OMX player",
                         dest="actions",
@@ -700,9 +716,23 @@ def print_genres(gamelists):
     print()
 
 
+def print_games_with_genre(gamelists, genre, action=None, kidlist=None):
+    """Prints all games with the given genre"""
+    for system, games in gamelists.get_games_by_genre(genre).items():
+        underline(system.name)
+        for game in games:
+            print(game.display_name)
+            if action == "hide":
+                if kidlist is not None:
+                    kidlist.get_system(system.name).game(
+                        game.name).set_hidden(True)
+                game.set_hidden(True)
+        if action == "remove":
+            system.remove_games(games)
+
+
 def print_info(kidlist, gamelists, tokens=DEFAULT_TOKENS):
     """Prints some information about the sate of affairs"""
-
     genres = {}
     for system in gamelists.systems:
         underline(system.name)
@@ -738,30 +768,40 @@ def main():
     gamelists = Gamelists(args.systems)
     kidlist = Kidlist()
 
-    if args.action == "sync":
+    action, action_arguments = args.action[0], args.action[1:]
+
+    if action == "sync":
         sync(kidlist, gamelists, not args.require_both)
-    elif args.action == "info":
+    elif action == "info":
         print_info(kidlist, gamelists)
-    elif args.action == "genres":
+    elif action == "genre":
+        if len(action_arguments) >= 1:
+            print_games_with_genre(
+                gamelists, action_arguments[0],
+                action_arguments[1] if len(action_arguments) > 1 else None)
+        else:
+            print("ERROR: You must specify a genre")
+            return
+    elif action == "genres":
         print_genres(gamelists)
-    elif args.action in ["clean", "clean-gamelists"]:
+    elif action in ["clean", "clean-gamelists"]:
         gamelists.clean()
-    elif args.action == "clean-kidlist":
+    elif action == "clean-kidlist":
         kidlist.clean(gamelists)
-    elif args.action == "format-videos":
+    elif action == "format-videos":
         gamelists.format_videos(args.dry_run)
-    elif args.action == "remove-incomplete":
+    elif action == "remove-incomplete":
         gamelists.remove_incomplete()
-    elif args.action == "revert":
+    elif action == "revert":
         gamelists.restore_backup()
         kidlist.restore_backup()
         print("Restored backups")
         return
-    elif args.action == "backup":
+    elif action == "backup":
         gamelists.backup()
         kidlist.backup()
     else:
-        print(f"Unknown action {args.action}")
+        print(f"Unknown action '{action}'")
         return
 
     # Print any changes
