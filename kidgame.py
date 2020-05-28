@@ -109,6 +109,11 @@ class GamelistGame(Game):
         self._root = root
         self._gamelist = gamelist
 
+    @property
+    def system(self):
+        """Returns the game's system (parent)"""
+        return self._gamelist
+
     @staticmethod
     def get_name_from_path(rom_path):
         """Returns the unique name of a game from its path"""
@@ -128,11 +133,11 @@ class GamelistGame(Game):
         if value:
             kidgame = ET.SubElement(self._element, token)
             kidgame.text = "true"
-            self.add_change(f"Marked {self.name} as {token}")
+            self.add_change(f"Marked {self.display_name} as {token}")
         else:
             sub_element = self._element.find(token)
             self._element.remove(sub_element)
-            self.add_change(f"Marked {self.name} as not {token}")
+            self.add_change(f"Marked {self.display_name} as not {token}")
 
     def add_change(self, change):
         """Adds a change to the list"""
@@ -313,17 +318,20 @@ class SystemKidlist(System):
 
 class Kidlist:
     """Class that keeps track of my own list of properties"""
-    def __init__(self, path=DEFAULT_KIDLIST_PATH):
+    def __init__(self, systems=None, path=DEFAULT_KIDLIST_PATH):
         """Constructor"""
         self.changes = {}
         self._path = path
         self._dict = {}
+        self._systems_whitelist = systems
         if os.path.exists(path):
             with open(path, "r") as handle:
                 self._dict = json.load(handle)
 
     def get_system(self, system_name):
         """Returns a KidlistSystem"""
+        if self._systems_whitelist and system_name not in self._systems_whitelist:
+            return None
         return SystemKidlist(self, system_name)
 
     @property
@@ -355,6 +363,8 @@ class Kidlist:
     def systems(self):
         """Returns an iterator of systems"""
         for system_name in self._dict:
+            if self._systems_whitelist and system_name not in self._systems_whitelist:
+                continue
             yield self.get_system(system_name)
 
     def clean(self, gamelists):
@@ -412,6 +422,11 @@ class SystemGamelist(System):
             if game.name == name:
                 return game
         return None
+
+    def game_by_path(self, path):
+        """Returns a game from its path"""
+        name = GamelistGame.get_name_from_path(path)
+        return self.game(name)
 
     def add_change(self, change):
         """Adds a change to list of changes"""
@@ -520,6 +535,15 @@ class SystemGamelist(System):
         """Returns all the games in this system that have the given genre"""
         return [game for game in self.games if genre in game.genres]
 
+    def find_games(self, partial):
+        """Returns all games that contain `partial`"""
+        return [
+            game for game in self.games if any([
+                partial.lower() in name.lower()
+                for name in [game.display_name, game.name]
+            ])
+        ]
+
 
 class Gamelists:
     """Class that represents the gamelists on the machine"""
@@ -545,14 +569,13 @@ class Gamelists:
                 return path
         return None
 
-    @staticmethod
-    def get_system_name_from_path(gamelist_path):
+    def get_system_from_path(self, gamelist_path):
         """Returns the system name from a gamelist.xml path"""
         name = os.path.basename(os.path.dirname(
             os.path.abspath(gamelist_path)))
         if name in [".", "/", ""]:
             return None
-        return name
+        return self.get_system(name)
 
     def get_system(self, system_name):
         """Returns a SystemGamelist"""
@@ -598,10 +621,10 @@ class Gamelists:
                 if os.path.islink(os.path.dirname(gamelist)):
                     # Ignore symlinks
                     continue
-                name = Gamelists.get_system_name_from_path(gamelist)
-                if self._systems_whitelist and name not in self._systems_whitelist:
+                system = self.get_system_from_path(gamelist)
+                if self._systems_whitelist and system.name not in self._systems_whitelist:
                     continue
-                yield self.get_system(name)
+                yield system
 
     @property
     def changes(self):
@@ -642,6 +665,13 @@ class Gamelists:
             if games:
                 result[system] = games
         return result
+
+    def find_games(self, partial):
+        """Returns all games that contain `partial`"""
+        games = []
+        for system in self.systems:
+            games.extend(system.find_games(partial))
+        return games
 
 
 def underline(message):
@@ -761,6 +791,82 @@ def print_info(kidlist, gamelists, tokens=DEFAULT_TOKENS):
         print()
 
 
+def add_remove(add,
+               arguments,
+               kidlist,
+               gamelists,
+               tokens=DEFAULT_TOKENS,
+               default_token="favorite"):
+    """Adds or removes (based on `add`) a game to a list"""
+
+    # Read the token from the arguments
+    token = default_token
+    for candidate in tokens:
+        if candidate in arguments:
+            token = candidate
+            arguments.remove(candidate)
+            break
+
+    # Read the system from the arguments
+    system_all = None
+    for candidate in gamelists.systems:
+        if candidate.name in arguments:
+            system = candidate
+            arguments.remove(candidate.name)
+            break
+
+    # Check the games
+    if not arguments:
+        print(
+            "Error! Could not understand your add/remove request. No games found."
+        )
+        return
+
+    for argument in arguments:
+        game = None
+        if os.path.exists(argument):
+            game_system = gamelists.get_system_from_path(argument)
+            system = system_all
+            if system is not None and game_system.name != system.name:
+                print(
+                    f"Cannot add {argument} (part of {game_system.name}) to {system.name}."
+                )
+                continue
+            if system_all is None:
+                system = game_system
+            if system is None:
+                print(f"Could not determine the system for {argument}")
+                continue
+
+            game = system.game_by_path(argument)
+            if game is None:
+                print(
+                    f"Could not find {argument} in {system.name} (need to scrape?)"
+                )
+                continue
+        else:
+            games = system_all.find_games(
+                argument) if system_all is not None else gamelists.find_games(
+                    argument)
+            if len(games) == 0:
+                print(f"Could not find any games named {argument}")
+                continue
+            elif len(games) > 1:
+                print(f"Found multiple games: ")
+                for game in games:
+                    if system_all is None:
+                        print(f"{game.system.name}: {game.display_name}")
+                    else:
+                        print(game.display_name)
+                continue
+
+            game = games[0]
+            system = game.system
+
+        game.set_type(token, add)
+        kidlist.get_system(system.name).game(game.name).set_type(token, add)
+
+
 def main():
     """Main Method"""
     args = parse_args()
@@ -770,7 +876,7 @@ def main():
 
     # Load the two sources of truth
     gamelists = Gamelists(args.systems)
-    kidlist = Kidlist()  # TODO - send systems in here, too
+    kidlist = Kidlist(args.systems)  # TODO - send systems in here, too
 
     action, action_arguments = args.action[0], args.action[1:]
 
@@ -788,7 +894,7 @@ def main():
             return
     elif action == "genres":
         sort_by_count = False
-        if len(action_arguments):
+        if action_arguments:
             sort_by_count = action_arguments[0] == "count"
         print_genres(gamelists, sort_by_count)
     elif action in ["clean", "clean-gamelists"]:
@@ -807,6 +913,9 @@ def main():
     elif action == "backup":
         gamelists.backup()
         kidlist.backup()
+    elif action in ["add", "remove", "set", "unset"]:
+        add_remove(action in ["add", "set"], action_arguments, kidlist,
+                   gamelists)
     else:
         print(f"Unknown action '{action}'")
         return
