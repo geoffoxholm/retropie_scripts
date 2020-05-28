@@ -164,7 +164,7 @@ class GamelistGame(Game):
         """Returns the value of a token as a resolved path"""
         relative = self.get_property(token)
         if relative:
-            return os.path.join(self._root, relative)
+            return os.path.abspath(os.path.join(self._root, relative))
         return None
 
     @property
@@ -244,6 +244,11 @@ class GamelistGame(Game):
                 print(error)
                 return False
         return False
+
+    def __str__(self):
+        """Returns string representation"""
+        return f"'{self.display_name}' ({self.name}) of {self.system.name}: " + ", ".join(
+            self.genres)
 
 
 class System:
@@ -544,6 +549,14 @@ class SystemGamelist(System):
             ])
         ]
 
+    @property
+    def unscraped_games(self):
+        """Returns all the games that are not in the gamelist"""
+        all_roms = glob.glob(os.path.join(os.path.dirname(self._path),
+                                          "*.zip"))
+        scraped_roms = [game.path for game in self.games]
+        return filter(lambda rom: rom not in scraped_roms, all_roms)
+
 
 class Gamelists:
     """Class that represents the gamelists on the machine"""
@@ -622,6 +635,8 @@ class Gamelists:
                     # Ignore symlinks
                     continue
                 system = self.get_system_from_path(gamelist)
+                if system is None:
+                    continue
                 if self._systems_whitelist and system.name not in self._systems_whitelist:
                     continue
                 yield system
@@ -791,6 +806,35 @@ def print_info(kidlist, gamelists, tokens=DEFAULT_TOKENS):
         print()
 
 
+def find_games(argument, gamelists, system):
+    """Finds the best game, or games based on the clue"""
+    if os.path.exists(argument):
+        game_system = gamelists.get_system_from_path(argument)
+        if system is not None and game_system.name != system.name:
+            return f"{argument} is not in {system.name} (it's in {game_system.name})"
+        if system is None:
+            system = game_system
+        if system is None:
+            return f"Could not determine the system for {argument}"
+
+        game = system.game_by_path(argument)
+        if game is None:
+            return f"Could not find {argument} in {system.name} (need to scrape?)"
+        return [game]
+    else:
+        games = system.find_games(
+            argument) if system is not None else gamelists.find_games(argument)
+        if len(games) == 0:
+            return f"Could not find any games named {argument}"
+        if len(games) > 1:
+            for game in games:
+                for candidate in [game.name, game.display_name]:
+                    if argument.lower() == candidate.lower():
+                        # Found a direct match
+                        return [game]
+        return games
+
+
 def add_remove(add,
                arguments,
                kidlist,
@@ -800,71 +844,76 @@ def add_remove(add,
     """Adds or removes (based on `add`) a game to a list"""
 
     # Read the token from the arguments
+    if not len(arguments):
+        print("Error! Nothing to add/remove")
+        return
+
     token = default_token
-    for candidate in tokens:
-        if candidate in arguments:
-            token = candidate
-            arguments.remove(candidate)
-            break
+    if arguments[0] in tokens:
+        token = arguments[0]
+        arguments = arguments[1:]
+
+    if not len(arguments):
+        print("Error! Nothing to add/remove")
+        return
 
     # Read the system from the arguments
     system_all = None
     for candidate in gamelists.systems:
-        if candidate.name in arguments:
-            system = candidate
-            arguments.remove(candidate.name)
+        if candidate.name == arguments[0]:
+            system_all = candidate
+            arguments = arguments[1:]
             break
 
-    # Check the games
-    if not arguments:
-        print(
-            "Error! Could not understand your add/remove request. No games found."
-        )
-        return
-
     for argument in arguments:
-        game = None
-        if os.path.exists(argument):
-            game_system = gamelists.get_system_from_path(argument)
-            system = system_all
-            if system is not None and game_system.name != system.name:
-                print(
-                    f"Cannot add {argument} (part of {game_system.name}) to {system.name}."
-                )
-                continue
-            if system_all is None:
-                system = game_system
-            if system is None:
-                print(f"Could not determine the system for {argument}")
-                continue
-
-            game = system.game_by_path(argument)
-            if game is None:
-                print(
-                    f"Could not find {argument} in {system.name} (need to scrape?)"
-                )
-                continue
-        else:
-            games = system_all.find_games(
-                argument) if system_all is not None else gamelists.find_games(
-                    argument)
-            if len(games) == 0:
-                print(f"Could not find any games named {argument}")
-                continue
-            elif len(games) > 1:
-                print(f"Found multiple games: ")
-                for game in games:
-                    if system_all is None:
-                        print(f"{game.system.name}: {game.display_name}")
-                    else:
-                        print(game.display_name)
-                continue
-
-            game = games[0]
-            system = game.system
-
+        search_result = find_games(argument, gamelists, system_all)
+        if isinstance(search_result, str):
+            print(search_result)
+            continue
+        if len(search_result) > 1:
+            print(f"Found multiple games: ")
+            for game in search_result:
+                if system_all is None:
+                    print(f"{game.system.name}: {game.display_name}")
+                else:
+                    print(game.display_name)
+            continue
+        game = search_result[0]
+        system = game.system
         game.set_type(token, add)
         kidlist.get_system(system.name).game(game.name).set_type(token, add)
+
+
+def print_game_info(gamelists, arguments):
+    """Prints some info about games"""
+    # Read the system from the arguments
+    system_all = None
+    for candidate in gamelists.systems:
+        if candidate.name == arguments[0]:
+            system_all = candidate
+            arguments = arguments[1:]
+            break
+
+    for argument in arguments:
+        underline(argument)
+        games = find_games(argument, gamelists, system_all)
+        if isinstance(games, str):
+            print(games)
+            continue
+        for game in games:
+            print(game)
+
+
+def clean_roms(gamelists, dry_run):
+    """Removes roms from disk that are not in the gamelist.xml"""
+    print("Please wait...")
+    changes = []
+    for system in gamelists.systems:
+        for game in system.unscraped_games:
+            changes.append(f"Removed {game} from disk")
+            if not dry_run:
+                os.remove(game)
+    return changes
 
 
 def main():
@@ -876,14 +925,18 @@ def main():
 
     # Load the two sources of truth
     gamelists = Gamelists(args.systems)
-    kidlist = Kidlist(args.systems)  # TODO - send systems in here, too
+    kidlist = Kidlist(args.systems)
+    other_changes = []
 
     action, action_arguments = args.action[0], args.action[1:]
 
     if action == "sync":
         sync(kidlist, gamelists, not args.require_both)
     elif action == "info":
-        print_info(kidlist, gamelists)
+        if len(action_arguments) == 0:
+            print_info(kidlist, gamelists)
+        else:
+            print_game_info(gamelists, action_arguments)
     elif action == "genre":
         if len(action_arguments) >= 1:
             print_games_with_genre(
@@ -901,6 +954,8 @@ def main():
         gamelists.clean()
     elif action == "clean-kidlist":
         kidlist.clean(gamelists)
+    elif action == "clean-roms":
+        other_changes = clean_roms(gamelists, args.dry_run)
     elif action == "format-videos":
         gamelists.format_videos(args.dry_run)
     elif action == "remove-incomplete":
@@ -940,6 +995,12 @@ def main():
                 print(f"Saved {source_type} (backups made)")
             else:
                 print(f"Would have saved {source_type}")
+
+    if other_changes:
+        print(f"Other changes:")
+        for change in other_changes:
+            print(change)
+
     print("Done")
 
 

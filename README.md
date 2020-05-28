@@ -20,6 +20,7 @@ python3 kidgame.py format-videos [--dry-run] [--systems <system> ...]
 python3 kidgame.py clean [--dry-run] [--systems <system> ...]
 python3 kidgame.py clean-gamelists [--dry-run] [--systems <system> ...]
 python3 kidgame.py clean-kidlist [--dry-run] [--systems <system> ...]
+python3 kidgame.py clean-roms [--dry-run] [--systems <system> ...]
 python3 kidgame.py remove-incomplete [--dry-run] [--systems <system> ...]
 python3 kidgame.py backup [--systems <system> ...]
 python3 kidgame.py revert [--systems <system> ...]
@@ -34,6 +35,7 @@ python3 kidgame.py revert [--systems <system> ...]
 * **genre** - Perform an action on a genre. Following `genre` you can add any of `{list,remove,hidden,kidgame,favorite}`. If omitted, then `list` is assumed
 * **format-videos** - Ensures all the videos are in a format that can be played by OMX player
 * **clean** or **clean-gamelist** - Removes missing roms from the `gamelist.xml`. Converts escaped characters that do not need to be escaped (removes `&amp` from descriptions). Renames `Plateform` genre to `Platform`. 
+* **clean-roms** removes roms from disk that are not found in `gamelist.xml`. This is needed because removing genres from the gamelist will not remove entries from the rom menu in emulation station.
 * **clean-kidlist** - Removes games from the `kidlist` that are not found in the associated `gamelist`
 * **remove-incomplete** - Removes games from `gamelist` if the video or image is missing (so that you can rescrape)
 * **backup** - Saves the gamelists and kidlist. If systems is specified then only those `gamelist.xml` will be saved (the full kidlist will be saved)
