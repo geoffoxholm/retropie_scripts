@@ -538,7 +538,10 @@ class SystemGamelist(System):
 
     def get_games_by_genre(self, genre):
         """Returns all the games in this system that have the given genre"""
-        return [game for game in self.games if genre in game.genres]
+        return [
+            game for game in self.games
+            if genre.lower() in [g.lower() for g in game.genres]
+        ]
 
     def find_games(self, partial):
         """Returns all games that contain `partial`"""
