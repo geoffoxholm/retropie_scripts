@@ -27,9 +27,16 @@ TEXT_REPLACEMENTS = (("&amp;", "&"), ("&quot;", "\""), ("&copy;", "©"),
 
 class Game:
     """Represents a single game of a system"""
-    def __init__(self, name):
+
+    def __init__(self, name, system):
         """Constructor"""
         self.name = name
+        self.system = system
+
+    @property
+    def display_name(self):
+        """Name that is displayed"""
+        return self.name
 
     @property
     def kidgame(self):
@@ -69,19 +76,23 @@ class Game:
         """Sets whether the game has the 'token' set"""
         raise RuntimeError("Cannot call set_type on base-class")
 
+    def __str__(self):
+        """Returns string representation"""
+        return f"'{self.display_name}' ({self.name}) of {self.system.name}"
+
 
 class KidlistGame(Game):
     """Game as represented by a kidlist"""
+
     def __init__(self, system_kidlist, name):
         """Constructor"""
-        Game.__init__(self, name)
-        self._system_kidlist = system_kidlist
+        Game.__init__(self, name, system_kidlist)
 
     def is_type(self, token):
         """Returns whether this game has its token set"""
-        if token == "hidden" and self._system_kidlist.hide_all:
+        if token == "hidden" and self.system.hide_all:
             return True
-        return self.name in self._system_kidlist.get_list(token)
+        return self.name in self.system.get_list(token)
 
     def set_type(self, token, value):
         """Sets the token of this game to value"""
@@ -89,30 +100,25 @@ class KidlistGame(Game):
             # No change
             return
 
-        token_list = self._system_kidlist.get_list(token)
+        token_list = self.system.get_list(token)
         if value:
             token_list.append(self.name)
-            self._system_kidlist.add_change(f"Marked {self.name} as {token}")
+            self.system.add_change(f"Marked {self.name} as {token}")
         else:
             token_list.remove(self.name)
-            self._system_kidlist.add_change(
-                f"Marked {self.name} as not {token}")
+            self.system.add_change(f"Marked {self.name} as not {token}")
 
 
 class GamelistGame(Game):
     """Game as represented by a gamelist.xml"""
-    def __init__(self, element, root, gamelist):
+
+    def __init__(self, element, gamelist, root):
         """Constructor"""
         Game.__init__(
-            self, GamelistGame.get_name_from_path(element.find("path").text))
+            self, GamelistGame.get_name_from_path(element.find("path").text),
+            gamelist)
         self._element = element
         self._root = root
-        self._gamelist = gamelist
-
-    @property
-    def system(self):
-        """Returns the game's system (parent)"""
-        return self._gamelist
 
     @staticmethod
     def get_name_from_path(rom_path):
@@ -139,9 +145,9 @@ class GamelistGame(Game):
             self._element.remove(sub_element)
             self.add_change(f"Marked {self.display_name} as not {token}")
 
-    def add_change(self, change):
+    def add_change(self, change, notice=False):
         """Adds a change to the list"""
-        self._gamelist.add_change(change)
+        self.system.add_change(change, notice)
 
     def get_property(self, token, default=None, escaped=False):
         """Returns the value of a token, or the default if it's not found"""
@@ -245,14 +251,10 @@ class GamelistGame(Game):
                 return False
         return False
 
-    def __str__(self):
-        """Returns string representation"""
-        return f"'{self.display_name}' ({self.name}) of {self.system.name}: " + ", ".join(
-            self.genres)
-
 
 class System:
     """Represents a system"""
+
     def __init__(self, name):
         """Constructor for a system"""
         self.name = name
@@ -262,9 +264,14 @@ class System:
         """Returns a game of the system"""
         raise RuntimeError("Cannot call game of base class System")
 
+    def __str__(self):
+        """Returns string representation"""
+        return self.name
+
 
 class SystemKidlist(System):
     """System kidlist"""
+
     def __init__(self, kidlist, system):
         """Constructor"""
         System.__init__(self, system)
@@ -283,9 +290,9 @@ class SystemKidlist(System):
             self._dict[token] = []
         return self._dict[token]
 
-    def add_change(self, change):
+    def add_change(self, change, notice=False):
         """Adds a change to the list"""
-        self._kidlist.add_change(self.name, change)
+        self._kidlist.add_change(self.name, change, notice)
 
     @property
     def hide_all(self):
@@ -301,7 +308,7 @@ class SystemKidlist(System):
                 for game in games:
                     game_names.add(game)
         for name in game_names:
-            yield (self.game(name))
+            yield self.game(name)
 
     def clean(self, gamelist):
         """Removes games not found in gamelist"""
@@ -323,9 +330,11 @@ class SystemKidlist(System):
 
 class Kidlist:
     """Class that keeps track of my own list of properties"""
+
     def __init__(self, systems=None, path=DEFAULT_KIDLIST_PATH):
         """Constructor"""
         self.changes = {}
+        self.notices = {}
         self._path = path
         self._dict = {}
         self._systems_whitelist = systems
@@ -358,11 +367,12 @@ class Kidlist:
         """Restores from backup"""
         copyfile(self.backup_path, self._path)
 
-    def add_change(self, system, change):
+    def add_change(self, system, change, notice=False):
         """Add a change to the list"""
+        working = self.notices if notice else self.changes
         if system not in self.changes:
-            self.changes[system] = []
-        self.changes[system].append(change)
+            working[system] = []
+        working[system].append(change)
 
     @property
     def systems(self):
@@ -385,12 +395,14 @@ class Kidlist:
 
 class SystemGamelist(System):
     """Class that wraps a specific gamelist.xml"""
+
     def __init__(self, path, name, gamelists):
         """Constructor"""
         System.__init__(self, name)
         self._path = path
         self._tree = ET.parse(self._path)
         self.changes = []
+        self.notices = []
         self._gamelists = gamelists
 
     @property
@@ -417,9 +429,8 @@ class SystemGamelist(System):
     def games(self):
         """Returns iterable list of games"""
         for rom in self._tree.getroot():
-            yield GamelistGame(rom,
-                               os.path.dirname(os.path.abspath(self._path)),
-                               self)
+            yield GamelistGame(rom, self,
+                               os.path.dirname(os.path.abspath(self._path)))
 
     def game(self, name):
         """Returns a specific game by its name"""
@@ -433,9 +444,12 @@ class SystemGamelist(System):
         name = GamelistGame.get_name_from_path(path)
         return self.game(name)
 
-    def add_change(self, change):
+    def add_change(self, change, notice=False):
         """Adds a change to list of changes"""
-        self.changes.append(change)
+        if notice:
+            self.notices.append(change)
+        else:
+            self.changes.append(change)
 
     def remove_games(self, to_remove):
         """Removes games from this system"""
@@ -563,6 +577,7 @@ class SystemGamelist(System):
 
 class Gamelists:
     """Class that represents the gamelists on the machine"""
+
     def __init__(self,
                  systems=None,
                  dirs=DEFAULT_GAMELIST_DIRS,
@@ -704,7 +719,7 @@ def parse_args():
         description="Exports or applies kidgame tag to gameslist.xml file")
     parser.add_argument(
         "action",
-        help="Action {sync,clean,info,format-videos,remove-incomplete}",
+        help="Action {sync,clean,info,format-videos,remove-incomplete,clean-kidlist,clean-roms,genres,genre}",
         default=["info"],
         nargs="*")
     parser.add_argument("--dry-run",
@@ -717,8 +732,7 @@ def parse_args():
                         help="Which system(s) to run on")
     parser.add_argument(
         "--require-both",
-        help=
-        "For `sync` action, set status only if both lists agree, otherwise unset (remove)",
+        help="For `sync` action, set status only if both lists agree, otherwise unset (remove)",
         action="store_true",
         default=False)
     args = parser.parse_args()
@@ -875,11 +889,7 @@ def add_remove(add,
             continue
         if len(search_result) > 1:
             print(f"Found multiple games: ")
-            for game in search_result:
-                if system_all is None:
-                    print(f"{game.system.name}: {game.display_name}")
-                else:
-                    print(game.display_name)
+            print("\n".join(search_result))
             continue
         game = search_result[0]
         system = game.system
@@ -903,8 +913,7 @@ def print_game_info(gamelists, arguments):
         if isinstance(games, str):
             print(games)
             continue
-        for game in games:
-            print(game)
+        print("\n".join(games))
 
 
 def clean_roms(gamelists, dry_run):
@@ -976,7 +985,11 @@ def main():
                    gamelists)
     else:
         print(f"Unknown action '{action}'")
-        return
+
+    if other_changes:
+        print(f"Changes:")
+        for change in other_changes:
+            print(change)
 
     # Print any changes
     for source_type, source in {
@@ -998,11 +1011,6 @@ def main():
                 print(f"Saved {source_type} (backups made)")
             else:
                 print(f"Would have saved {source_type}")
-
-    if other_changes:
-        print(f"Other changes:")
-        for change in other_changes:
-            print(change)
 
     print("Done")
 
