@@ -9,6 +9,7 @@ import ffmpeg
 import signal
 import sys
 from shutil import copyfile
+import re
 
 DEFAULT_GAMELIST_DIRS = (os.path.expanduser("~/RetroPie/roms"),
                          os.path.expanduser("~/.emulationstation/gamelists"))
@@ -27,7 +28,6 @@ TEXT_REPLACEMENTS = (("&amp;", "&"), ("&quot;", "\""), ("&copy;", "©"),
 
 class Game:
     """Represents a single game of a system"""
-
     def __init__(self, name, system):
         """Constructor"""
         self.name = name
@@ -80,10 +80,23 @@ class Game:
         """Returns string representation"""
         return f"'{self.display_name}' ({self.name}) of {self.system.name}"
 
+    @property
+    def tags(self):
+        """Returns the tags present in the games path"""
+        paren_start = self.name.find(" (")
+
+        tags = []
+        if paren_start > 0:
+            # Split all the tokens at commas
+            tokens = re.findall(r"\(([^/)]+)\)", self.name)
+            for token in tokens:
+                for t in token.split(","):
+                    tags.append(t.strip())
+        return tags
+
 
 class KidlistGame(Game):
     """Game as represented by a kidlist"""
-
     def __init__(self, system_kidlist, name):
         """Constructor"""
         Game.__init__(self, name, system_kidlist)
@@ -111,7 +124,6 @@ class KidlistGame(Game):
 
 class GamelistGame(Game):
     """Game as represented by a gamelist.xml"""
-
     def __init__(self, element, gamelist, root):
         """Constructor"""
         Game.__init__(
@@ -254,7 +266,6 @@ class GamelistGame(Game):
 
 class System:
     """Represents a system"""
-
     def __init__(self, name):
         """Constructor for a system"""
         self.name = name
@@ -271,7 +282,6 @@ class System:
 
 class SystemKidlist(System):
     """System kidlist"""
-
     def __init__(self, kidlist, system):
         """Constructor"""
         System.__init__(self, system)
@@ -330,7 +340,6 @@ class SystemKidlist(System):
 
 class Kidlist:
     """Class that keeps track of my own list of properties"""
-
     def __init__(self, systems=None, path=DEFAULT_KIDLIST_PATH):
         """Constructor"""
         self.changes = {}
@@ -395,7 +404,6 @@ class Kidlist:
 
 class SystemGamelist(System):
     """Class that wraps a specific gamelist.xml"""
-
     def __init__(self, path, name, gamelists):
         """Constructor"""
         System.__init__(self, name)
@@ -482,14 +490,21 @@ class SystemGamelist(System):
         """Clean the xml"""
         to_remove = set()
         paths = {}
+        names = {}
         for game in self.games:
             if not game.exists:
-                to_remove.add(game)
-                self.add_change(f"Removed {game.name} from xml (missing rom)")
+                to_remove.add((game, "missing rom"))
                 continue
+
+            # Check name
+            if game.display_name not in names:
+                names[game.display_name] = []
+            names[game.display_name].append(game)
+
+            # Check path
             path = game.path
             if path in paths:
-                to_remove.add(game)
+                to_remove.add((game, "duplicate path"))
                 master = paths[path]._element
                 rom = game._element
                 # Merge attributes
@@ -497,10 +512,23 @@ class SystemGamelist(System):
                 for child in rom:
                     if master.find(rom.tag) is None:
                         master.append(child)
-                self.add_change(f"Removed {game.name} from xml (duplicate)")
                 continue
             # Save the unique entry for this path
             paths[path] = game
+
+        # Check the duplicate names
+        for name, games in names.items():
+            if len(games) > 1:
+                filtered = list(filter(lambda game: "USA" in game.tags, games))
+                if len(filtered) == 1:
+                    for game in games:
+                        if "USA" not in game.tags:
+                            to_remove.add(
+                                (game, "Duplicate name, missing USA tag"))
+                else:
+                    paths = ", ".join([game.path for game in games])
+                    self.add_change(
+                        f"Multiple games with name {name}: ({paths})", True)
 
         # Now remove the ones marked for removal
         self.remove_games(to_remove)
@@ -577,7 +605,6 @@ class SystemGamelist(System):
 
 class Gamelists:
     """Class that represents the gamelists on the machine"""
-
     def __init__(self,
                  systems=None,
                  dirs=DEFAULT_GAMELIST_DIRS,
@@ -667,6 +694,14 @@ class Gamelists:
             changes[system_name] = system.changes
         return changes
 
+    @property
+    def notices(self):
+        """Returns any notices"""
+        return {
+            system.name: system.notices
+            for system in self._open_systems.values()
+        }
+
     def clean(self, ignore=("retropie")):
         """Does cleaning of the systems"""
         for system in self.systems:
@@ -719,7 +754,8 @@ def parse_args():
         description="Exports or applies kidgame tag to gameslist.xml file")
     parser.add_argument(
         "action",
-        help="Action {sync,clean,info,format-videos,remove-incomplete,clean-kidlist,clean-roms,genres,genre}",
+        help=
+        "Action {sync,clean,info,format-videos,remove-incomplete,clean-kidlist,clean-roms,genres,genre}",
         default=["info"],
         nargs="*")
     parser.add_argument("--dry-run",
@@ -732,7 +768,8 @@ def parse_args():
                         help="Which system(s) to run on")
     parser.add_argument(
         "--require-both",
-        help="For `sync` action, set status only if both lists agree, otherwise unset (remove)",
+        help=
+        "For `sync` action, set status only if both lists agree, otherwise unset (remove)",
         action="store_true",
         default=False)
     args = parser.parse_args()
@@ -889,7 +926,8 @@ def add_remove(add,
             continue
         if len(search_result) > 1:
             print(f"Found multiple games: ")
-            print("\n".join(search_result))
+            for game in search_result:
+                print(game)
             continue
         game = search_result[0]
         system = game.system
@@ -913,7 +951,8 @@ def print_game_info(gamelists, arguments):
         if isinstance(games, str):
             print(games)
             continue
-        print("\n".join(games))
+        for game in games:
+            print(game)
 
 
 def clean_roms(gamelists, dry_run):
@@ -997,6 +1036,12 @@ def main():
             "gamelist": gamelists
     }.items():
         some_changes = False
+        for system, notices in source.notices.items():
+            if len(notices):
+                underline(f"Notices about {system}'s {source_type}")
+                for notice in notices:
+                    print(notice)
+
         for system, changes in source.changes.items():
             if len(changes):
                 underline(f"Changes to {system}'s {source_type}")
