@@ -6,13 +6,13 @@ This program allows you to keep your own list of favorites in a `kidlist.json` f
 
 ```sh
 python3 kidgame.py
-python3 kidgame.py info
-python3 kidgame.py info <game>
-python3 kidgame.py sync [--require-both]
+python3 kidgame.py info [--systems <system> ...]
+python3 kidgame.py info <game> [--systems <system> ...]
+python3 kidgame.py sync [--require-both] [--systems <system> ...]
 pyothn3 kidgame.py <add|remove|set|unset> [(favorite)|kidgame|hidden] [system] <path or name> <path or name>
-python3 kidgame.py genres [count|(alpha)]
-python3 kidgame.py genre <genre> 
-python3 kidgame.py genre <genre> list
+python3 kidgame.py genres [count|(alpha)] [--systems <system> ...]
+python3 kidgame.py genre <genre> [--systems <system> ...]
+python3 kidgame.py genre <genre> list [--systems <system> ...]
 python3 kidgame.py genre <genre> remove [--dry-run] [--systems <system> ...]
 python3 kidgame.py genre <genre> favorite [--dry-run] [--systems <system> ...]
 python3 kidgame.py genre <genre> hidden [--dry-run] [--systems <system> ...]
@@ -26,6 +26,8 @@ python3 kidgame.py remove-incomplete [--dry-run] [--systems <system> ...]
 python3 kidgame.py backup [--systems <system> ...]
 python3 kidgame.py revert [--systems <system> ...]
 ```
+
+Note: `--sys` or `--system` works in place of `--systems`
 
 ### Actions
 
