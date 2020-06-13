@@ -229,6 +229,10 @@ class GamelistGame(Game):
         return self._element
 
     @property
+    def year(self):
+        return int(self.get_property("releasedate")[:4])
+
+    @property
     def video_well_formatted(self):
         """Whether the video is properly formatted"""
         video_path = self.video
@@ -244,6 +248,21 @@ class GamelistGame(Game):
                 )
                 return False
         return False
+
+    @property
+    def detail_string(self):
+        """Detailed information about the game"""
+
+        tags = ", ".join([tag for tag in DEFAULT_TOKENS if self.get_property(tag) ])        
+        if tags:
+            tags = f"\n{tags}"
+        
+        result = (f"{self.display_name} ({self.year})\n" 
+        f"({self.name} on {self.system.name})"
+        f"{tags}"
+        )
+        return result
+
 
     def format_video(self):
         """Ensures the video is in a good format"""
@@ -949,10 +968,11 @@ def print_game_info(gamelists, arguments):
         underline(argument)
         games = find_games(argument, gamelists, system_all)
         if isinstance(games, str):
-            print(games)
+            print(games.detail_string)
             continue
         for game in games:
-            print(game)
+            print(game.detail_string)
+            print()
 
 
 def clean_roms(gamelists, dry_run):
