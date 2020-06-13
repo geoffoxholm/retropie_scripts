@@ -7,6 +7,7 @@ This program allows you to keep your own list of favorites in a `kidlist.json` f
 ```sh
 python3 kidgame.py
 python3 kidgame.py info
+python3 kidgame.py info <game>
 python3 kidgame.py sync [--require-both]
 pyothn3 kidgame.py <add|remove|set|unset> [(favorite)|kidgame|hidden] [system] <path or name> <path or name>
 python3 kidgame.py genres [count|(alpha)]
@@ -28,7 +29,7 @@ python3 kidgame.py revert [--systems <system> ...]
 
 ### Actions
 
-* **info** (default) - Lists some basic information about each system's lists
+* **info** (default) - Lists some basic information about each system's lists. If you specify a name pattern (like 'kirby'), it will show info about games matching that name pattern. 
 * **sync** - Makes sure the gamelists and kidlist are in sync. Use `--require-both` to remove flags that are not set in both systems. You'd use this if you remove something from a list, for example.
 * **add/remove** - Lets you add games by name or path to the favorites (or hidden or kidgame) lists
 * **genres** - List all the genres found. If `count` is specified it will sort by the number, otherwise alphebetic
